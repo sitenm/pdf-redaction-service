@@ -23,6 +23,74 @@ app.add_middleware(
 async def health_check():
     return {"status": "healthy", "service": "pdf-redaction"}
 
+@app.post("/extract-text-with-positions")
+async def extract_text_with_positions(pdf_file: UploadFile = File(...)):
+    """
+    Extract text from PDF with accurate positioning data.
+    
+    Returns:
+        JSON with text blocks and their coordinates
+    """
+    try:
+        # Read PDF file
+        pdf_bytes = await pdf_file.read()
+        print(f"PDF file size: {len(pdf_bytes)} bytes")
+        
+        # Open PDF with PyMuPDF
+        pdf_doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        print(f"PDF has {pdf_doc.page_count} pages")
+        
+        text_blocks = []
+        full_text = ""
+        
+        # Extract text with positions from each page
+        for page_num in range(pdf_doc.page_count):
+            page = pdf_doc[page_num]
+            
+            # Get text blocks with positioning
+            blocks = page.get_text("dict")
+            page_height = page.rect.height
+            
+            for block in blocks["blocks"]:
+                if "lines" in block:
+                    for line in block["lines"]:
+                        for span in line["spans"]:
+                            text = span["text"].strip()
+                            if text:
+                                # Convert coordinates from PDF (bottom-left) to standard (top-left)
+                                bbox = span["bbox"]
+                                x = bbox[0]
+                                y = page_height - bbox[3]  # Convert from bottom-left to top-left
+                                width = bbox[2] - bbox[0]
+                                height = bbox[3] - bbox[1]
+                                
+                                text_blocks.append({
+                                    "text": text,
+                                    "page": page_num + 1,  # 1-based page numbering
+                                    "bbox": {
+                                        "x": x,
+                                        "y": y,
+                                        "width": width,
+                                        "height": height
+                                    }
+                                })
+                                full_text += text + " "
+        
+        pdf_doc.close()
+        
+        print(f"Extracted {len(text_blocks)} text blocks from PDF")
+        
+        return {
+            "success": True,
+            "full_text": full_text.strip(),
+            "text_blocks": text_blocks,
+            "total_pages": pdf_doc.page_count
+        }
+        
+    except Exception as e:
+        print(f"Error during text extraction: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Text extraction failed: {str(e)}")
+
 @app.post("/redact-pdf")
 async def redact_pdf(
     pdf_file: UploadFile = File(...),
@@ -75,21 +143,24 @@ async def redact_pdf(
                     print(f"Warning: No bbox found for item {item.get('id', 'unknown')}")
                     continue
                 
-                # Convert bbox to PyMuPDF rectangle
-                # Note: PDF coordinates start from bottom-left, but our detection might be top-left
+                # Get bbox coordinates (already converted to top-left origin by our extraction)
                 x = bbox.get('x', 0)
                 y = bbox.get('y', 0)
                 width = bbox.get('width', 0)
                 height = bbox.get('height', 0)
                 
-                # Create rectangle for redaction
-                rect = fitz.Rect(x, y, x + width, y + height)
+                # Convert back to PDF coordinates (bottom-left origin) for PyMuPDF
+                page_height = page.rect.height
+                pdf_y = page_height - y - height  # Convert from top-left to bottom-left
                 
-                # Add redaction annotation
-                redact_annot = page.add_redact_annot(rect)
+                # Create rectangle for redaction (using PDF coordinate system)
+                rect = fitz.Rect(x, pdf_y, x + width, pdf_y + height)
+                
+                # Add redaction annotation with black fill
+                redact_annot = page.add_redact_annot(rect, fill=(0, 0, 0))  # RGB black fill
                 redact_annot.set_info(content=f"Redacted: {item.get('type', 'sensitive')}")
                 
-                print(f"Added redaction at ({x}, {y}, {x + width}, {y + height}) for {item.get('type', 'unknown')}")
+                print(f"Added redaction at PDF coords ({x}, {pdf_y}, {x + width}, {pdf_y + height}) for {item.get('type', 'unknown')}")
         
         # Apply all redactions
         for page in pdf_doc:
