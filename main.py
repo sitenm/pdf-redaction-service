@@ -76,6 +76,7 @@ async def extract_text_with_positions(pdf_file: UploadFile = File(...)):
                                 })
                                 full_text += text + " "
         
+        total_pages = pdf_doc.page_count  # Save page count before closing
         pdf_doc.close()
         
         print(f"Extracted {len(text_blocks)} text blocks from PDF")
@@ -84,7 +85,7 @@ async def extract_text_with_positions(pdf_file: UploadFile = File(...)):
             "success": True,
             "full_text": full_text.strip(),
             "text_blocks": text_blocks,
-            "total_pages": pdf_doc.page_count
+            "total_pages": total_pages
         }
         
     except Exception as e:
